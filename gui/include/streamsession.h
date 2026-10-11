@@ -33,6 +33,7 @@
 #include "settings.h"
 
 #include <QObject>
+#include <QString>
 #include <QImage>
 #include <QMouseEvent>
 #include <QMutex>
@@ -229,6 +230,9 @@ class StreamSession : public QObject
 		float haptic_override;
 		bool keyboard_controller_enabled;
 		bool mouse_touch_enabled;
+		// Text entry: while the console has a text field open, the PC keyboard types into it
+		bool text_entry_active = false;
+		QString text_entry_buffer;
 		bool dpad_regular;
 		bool dpad_regular_touch_switched;
 		uint dpad_touch_shortcut1;
@@ -362,6 +366,7 @@ class StreamSession : public QObject
 		ChiakiPiDecoder *GetPiDecoder()	{ return pi_decoder; }
 #endif
 		void HandleKeyboardEvent(QKeyEvent *event);
+		void HandleTextEntryKeyEvent(QKeyEvent *event);
 		void HandleTouchEvent(QTouchEvent *event, qreal width, qreal height);
 		void HandleDpadTouchEvent(ChiakiControllerState *state, bool placeholder = false);
 		void HandleMouseReleaseEvent(QMouseEvent *event);
