@@ -12,6 +12,8 @@
 #include "../../lib/src/utils.h"
 
 #include <QKeyEvent>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QMutexLocker>
 #include <QtMath>
 #include <atomic>
@@ -471,7 +473,9 @@ StreamSession::StreamSession(const StreamSessionConnectInfo &connect_info, QObje
 	chiaki_connect_info.host = host_str.constData();
 	chiaki_connect_info.video_profile = connect_info.video_profile;
 	chiaki_connect_info.video_profile_auto_downgrade = true;
-	chiaki_connect_info.enable_keyboard = false;
+	// With "Keyboard as controller" off, the PC keyboard types into the console's text fields
+	chiaki_connect_info.enable_keyboard = !connect_info.keyboard_controller_enabled;
+	
 	chiaki_connect_info.enable_idr_on_fec_failure = connect_info.enable_idr_on_fec_failure;
 	chiaki_connect_info.enable_dualsense = connect_info.enable_dualsense;
 	chiaki_connect_info.packet_loss_max = connect_info.packet_loss_max;
@@ -925,8 +929,60 @@ void StreamSession::HandleMouseMoveEvent(QMouseEvent *event, qreal width, qreal 
 	SendFeedbackState();
 }
 
+void StreamSession::HandleTextEntryKeyEvent(QKeyEvent *event)
+{
+	if(event->type() != QEvent::Type::KeyPress)
+		return;
+
+	switch(event->key())
+	{
+		case Qt::Key_Return:
+		case Qt::Key_Enter:
+			text_entry_active = false;
+			chiaki_session_keyboard_accept(&session);
+			return;
+		case Qt::Key_Escape:
+			text_entry_active = false;
+			chiaki_session_keyboard_reject(&session);
+			return;
+		case Qt::Key_Backspace:
+			if(text_entry_buffer.isEmpty())
+				return;
+			text_entry_buffer.chop(1);
+			break;
+		default:
+		{
+			QString text;
+			if(event->key() == Qt::Key_V && (event->modifiers() & Qt::ControlModifier))
+			{
+				// Ctrl+V pastes the first line of the clipboard
+				text = QGuiApplication::clipboard()->text().section(QLatin1Char('\n'), 0, 0);
+			}
+			else if(!(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)))
+				text = event->text();
+			QString printable;
+			for(const QChar c : text)
+			{
+				if(c.isPrint())
+					printable.append(c);
+			}
+			if(printable.isEmpty())
+				return;
+			text_entry_buffer.append(printable);
+			break;
+		}
+	}
+	QByteArray utf8 = text_entry_buffer.toUtf8();
+	chiaki_session_keyboard_set_text(&session, utf8.constData());
+}
+
 void StreamSession::HandleKeyboardEvent(QKeyEvent *event)
 {
+	if(text_entry_active)
+	{
+		HandleTextEntryKeyEvent(event);
+		return;
+	}
 	if(!keyboard_controller_enabled)
 		return;
 	if(key_map.contains(Qt::Key(event->key())) == false)
@@ -2354,6 +2410,25 @@ void StreamSession::Event(ChiakiEvent *event)
 			break;
 		case CHIAKI_EVENT_NICKNAME_RECEIVED:
 			emit NicknameReceived(event->server_nickname);
+			break;
+		case CHIAKI_EVENT_KEYBOARD_OPEN:
+		case CHIAKI_EVENT_KEYBOARD_TEXT_CHANGE: {
+			// Events come from the session thread, so copy the text and update on the Qt thread
+			const bool open = event->type == CHIAKI_EVENT_KEYBOARD_OPEN;
+			QString text = event->keyboard.text_str ? QString::fromUtf8(event->keyboard.text_str) : QString();
+			QMetaObject::invokeMethod(this, [this, open, text]() {
+				if(open)
+					text_entry_active = true;
+				if(text_entry_active)
+					text_entry_buffer = text;
+			});
+			break;
+		}
+		case CHIAKI_EVENT_KEYBOARD_REMOTE_CLOSE:
+			QMetaObject::invokeMethod(this, [this]() {
+				text_entry_active = false;
+				text_entry_buffer.clear();
+			});
 			break;
 		case CHIAKI_EVENT_RUMBLE: {
 			if(ps5_rumble_intensity < 0)
